@@ -290,7 +290,4 @@ class DDMWrapper(object):
 
 
 if __name__ == '__main__':
-    ddm = DDMWrapper()
-    replicas = ddm.ddm_get_full_replicas(
-        'mc15_13TeV:mc15_13TeV.410450.Powheg_ttbar_hdamp258p75_LHE.evgen.TXT.e6078_tid13013674_00')['result']
-    print replicas
+    pass
