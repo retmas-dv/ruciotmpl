@@ -144,12 +144,18 @@ class DDMWrapper(object):
         return int(metadata['events'] or 0)
 
     @ddm_exception_free_wrapper
-    def ddm_erase(self, dsn, undo=False):
+    def ddm_erase(self, dsn, undo=False, lifetime_desired=None):
         scope, name = self.extract_scope(dsn)
         lifetime = 86400
+        if not lifetime_desired is None:
+            lifetime = lifetime_desired
         if undo:
             lifetime = None
         self.ddm_client.set_metadata(scope=scope, name=name, key='lifetime', value=lifetime)
+
+    @ddm_exception_free_wrapper
+    def ddm_erase_no_wait(self, dsn):
+        self.ddm_erase(dsn, lifetime_desired=1)
 
     @ddm_exception_free_wrapper
     def ddm_register_dataset(self, dsn, files=None, statuses=None, meta=None, lifetime=None):
