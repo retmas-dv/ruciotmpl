@@ -13,6 +13,7 @@ __author__ = 'Dmitry Golubkov'
 import os
 import sys
 import re
+import math
 import logging
 from rucio.client import Client
 from rucio.common.exception import CannotAuthenticate, DataIdentifierNotFound, RucioException
@@ -86,8 +87,7 @@ class DDMWrapper(object):
         if not match:
             scope, dataset = self.extract_scope(pattern)
             collection = 'dataset'
-            if dataset.endswith('/'):
-                dataset = dataset[:-1]
+            if pattern.endswith('/'):
                 collection = 'container'
             filters = {'name': dataset}
             # FIXME: use type='collection'
@@ -111,7 +111,7 @@ class DDMWrapper(object):
                     if e['type'] == 'DATASET':
                         dataset_names.append(dsn)
                     elif e['type'] == 'CONTAINER':
-                        names = self.ddm_list_datasets_in_container(dsn)['result']
+                        names = self.ddm_list_datasets_in_container(dsn)
                         # FIXME: check not exist
                         dataset_names.extend(names)
         except DataIdentifierNotFound:
@@ -131,10 +131,11 @@ class DDMWrapper(object):
     @ddm_exception_free_wrapper
     def ddm_get_number_files(self, dsn):
         number_files = 0
-        scope, dataset = self.extract_scope(dsn)
-        files = self.ddm_client.list_files(scope, dataset, long=False)
-        for e in files:
-            number_files += 1
+        if self.is_dsn_container(dsn):
+            for name in self.ddm_list_datasets_in_container(dsn):
+                number_files += self.get_number_files_from_metadata(name)
+        else:
+            number_files += self.get_number_files_from_metadata(dsn)
         return number_files
 
     @ddm_exception_free_wrapper
@@ -143,11 +144,19 @@ class DDMWrapper(object):
         metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
         return int(metadata['events'] or 0)
 
+    def get_number_files_from_metadata(self, dsn):
+        scope, dataset = self.extract_scope(dsn)
+        try:
+            metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
+            return int(metadata['length'] or 0)
+        except Exception as ex:
+            raise Exception('DDM Error: rucio_client.get_metadata failed ({0}) ({1})'.format(str(ex), dataset))
+
     @ddm_exception_free_wrapper
     def ddm_erase(self, dsn, undo=False, lifetime_desired=None):
         scope, name = self.extract_scope(dsn)
         lifetime = 86400
-        if not lifetime_desired is None:
+        if lifetime_desired is not None:
             lifetime = lifetime_desired
         if undo:
             lifetime = None
@@ -232,8 +241,8 @@ class DDMWrapper(object):
     def ddm_get_full_replicas(self, dsn):
         datasets = list()
         dataset_replicas = dict()
-        if self.is_dataset_container(dsn):
-            datasets.extend(self.ddm_list_datasets_in_container(dsn)['result'])
+        if self.is_dsn_container(dsn):
+            datasets.extend(self.ddm_list_datasets_in_container(dsn))
         else:
             datasets.append(dsn)
         for dataset in datasets:
@@ -245,10 +254,22 @@ class DDMWrapper(object):
                     dataset_replicas[dataset].append(dataset_replica['rse'])
         return list(set.intersection(*[set(dataset_replicas[key]) for key in dataset_replicas]))
 
-    def is_dataset_container(self, dsn):
+    def is_dsn_container(self, dsn):
         scope, dataset = self.extract_scope(dsn)
         metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
         return bool(metadata['did_type'] == 'CONTAINER')
+
+    def is_dsn_dataset(self, dsn):
+        scope, dataset = self.extract_scope(dsn)
+        metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
+        return bool(metadata['did_type'] == 'DATASET')
+
+    def is_dsn_exist(self, dsn):
+        scope, dataset = self.extract_scope(dsn)
+        try:
+            return bool(self.ddm_client.get_metadata(scope=scope, name=dataset))
+        except DataIdentifierNotFound:
+            return False
 
     def get_nevents_per_file(self, dsn):
         number_files = self.ddm_get_number_files(dsn)['result']
@@ -257,8 +278,7 @@ class DDMWrapper(object):
         number_events = self.ddm_get_number_events(dsn)['result']
         if not number_files:
             raise ValueError('Dataset {0} has no events or corresponding metadata (nEvents)'.format(dsn))
-        round_up = lambda num: int(num + 1) if int(num) != num else int(num)
-        return round_up(float(number_events) / float(number_files))
+        return math.ceil(float(number_events) / float(number_files))
 
     def get_datasets_and_containers(self, input_data_name, datasets_contained_only=False):
         data_dict = {'containers': list(), 'datasets': list()}
@@ -270,8 +290,8 @@ class DDMWrapper(object):
             input_container_name = '{0}/'.format(input_data_name)
 
         # searching containers first
-        for name in self.ddm_list_datasets(input_container_name)['result']:
-            if self.is_dataset_container(name):
+        for name in self.ddm_list_datasets(input_container_name):
+            if self.is_dsn_container(name):
                 if name[-1] == '/':
                     data_dict['containers'].append(name)
                 else:
@@ -280,17 +300,25 @@ class DDMWrapper(object):
         # searching datasets
         if datasets_contained_only and len(data_dict['containers']):
             for container_name in data_dict['containers']:
-                dataset_names = self.ddm_list_datasets_in_container(container_name)['result']
+                dataset_names = self.ddm_list_datasets_in_container(container_name)
                 data_dict['datasets'].extend(dataset_names)
         else:
-            for name in self.ddm_list_datasets("{0}*".format(input_data_name))['result']:
-                # FIXME
-                is_sub_dataset = \
-                    re.match(r"%s.*_(sub|dis)\d*" % input_data_name.split(':')[-1], name.split(':')[-1], re.IGNORECASE)
-                is_o10_dataset = \
-                    re.match(r"%s.*.o10$" % input_data_name.split(':')[-1], name.split(':')[-1], re.IGNORECASE)
-                if not self.is_dataset_container(name) and not is_sub_dataset and not is_o10_dataset:
-                    data_dict['datasets'].append(name)
+            enable_pattern_search = True
+            names = self.ddm_list_datasets(input_data_name)
+            if len(names) > 0:
+                if names[0].split(':')[-1] == input_data_name.split(':')[-1] and self.is_dsn_dataset(names[0]):
+                    data_dict['datasets'].append(names[0])
+                    enable_pattern_search = False
+            if enable_pattern_search:
+                for name in self.ddm_list_datasets("{0}*".format(input_data_name)):
+                    # FIXME
+                    is_sub_dataset = \
+                        re.match(r"%s.*_(sub|dis)\d*" % input_data_name.split(':')[-1], name.split(':')[-1],
+                                 re.IGNORECASE)
+                    is_o10_dataset = \
+                        re.match(r"%s.*.o10$" % input_data_name.split(':')[-1], name.split(':')[-1], re.IGNORECASE)
+                    if not self.is_dsn_container(name) and not is_sub_dataset and not is_o10_dataset:
+                        data_dict['datasets'].append(name)
 
         return data_dict
 
