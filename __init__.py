@@ -1,3 +1,3 @@
 __author__ = 'Dmitry Golubkov'
 
-from ruciotmpl import DDMWrapper
+from .ruciotmpl import DDMWrapper
