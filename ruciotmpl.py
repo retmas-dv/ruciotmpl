@@ -231,6 +231,8 @@ class DDMWrapper(object):
 
     @ddm_exception_free_wrapper
     def ddm_get_metadata_attribute(self, dsn, attribute_name):
+        if dsn.endswith('/'):
+            dsn = dsn[:-1]
         scope, dataset = self.extract_scope(dsn)
         metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
         if attribute_name in metadata.keys():
