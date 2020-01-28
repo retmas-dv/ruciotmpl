@@ -85,10 +85,11 @@ class DDMWrapper(object):
         result = list()
         match = re.match(r'^\*', pattern)
         if not match:
-            scope, dataset = self.extract_scope(pattern)
             collection = 'dataset'
             if pattern.endswith('/'):
                 collection = 'container'
+                pattern = pattern[:-1]
+            scope, dataset = self.extract_scope(pattern)
             filters = {'name': dataset}
             # FIXME: use type='collection'
             for name in self.ddm_client.list_dids(scope, filters, type=collection):
