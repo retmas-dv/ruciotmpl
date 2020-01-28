@@ -38,6 +38,11 @@ def ddm_exception_free_wrapper(func):
     return call
 
 
+class DDMException(Exception):
+    def __init__(self, message):
+        super(DDMException, self).__init__(message)
+
+
 class DDMWrapper(object):
     def __init__(self):
         try:
@@ -54,6 +59,29 @@ class DDMWrapper(object):
     @staticmethod
     def _get_proxy():
         return X509_PROXY_PATH
+
+    @staticmethod
+    def _get_result(status):
+        return status.get('result', None)
+
+    @staticmethod
+    def _get_exception(status):
+        return status.get('exception', None)
+
+    @staticmethod
+    def _is_empty_result(status):
+        return status.get('result', None) is None
+
+    @staticmethod
+    def _has_exception(status):
+        return status.get('exception', None) is not None
+
+    @staticmethod
+    def _raise_ddm_exception_or_result(status):
+        if DDMWrapper._has_exception(status):
+            raise DDMException(DDMWrapper._get_exception(status))
+        else:
+            return DDMWrapper._get_result(status)
 
     def verify(self):
         try:
@@ -112,7 +140,7 @@ class DDMWrapper(object):
                     if e['type'] == 'DATASET':
                         dataset_names.append(dsn)
                     elif e['type'] == 'CONTAINER':
-                        names = self.ddm_list_datasets_in_container(dsn)
+                        names = self._raise_ddm_exception_or_result(self.ddm_list_datasets_in_container(dsn))
                         # FIXME: check not exist
                         dataset_names.extend(names)
         except DataIdentifierNotFound:
@@ -131,9 +159,11 @@ class DDMWrapper(object):
 
     @ddm_exception_free_wrapper
     def ddm_get_number_files(self, dsn):
+        if dsn.endswith('/'):
+            dsn = dsn[:-1]
         number_files = 0
         if self.is_dsn_container(dsn):
-            for name in self.ddm_list_datasets_in_container(dsn):
+            for name in self._raise_ddm_exception_or_result(self.ddm_list_datasets_in_container(dsn)):
                 number_files += self.get_number_files_from_metadata(name)
         else:
             number_files += self.get_number_files_from_metadata(dsn)
@@ -141,15 +171,29 @@ class DDMWrapper(object):
 
     @ddm_exception_free_wrapper
     def ddm_get_number_events(self, dsn):
-        scope, dataset = self.extract_scope(dsn)
-        metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
-        return int(metadata['events'] or 0)
+        if dsn.endswith('/'):
+            dsn = dsn[:-1]
+        number_events = 0
+        if self.is_dsn_container(dsn):
+            for name in self._raise_ddm_exception_or_result(self.ddm_list_datasets_in_container(dsn)):
+                number_events += self.get_number_events_from_metadata(name)
+        else:
+            number_events += self.get_number_events_from_metadata(dsn)
+        return number_events
 
     def get_number_files_from_metadata(self, dsn):
         scope, dataset = self.extract_scope(dsn)
         try:
             metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
             return int(metadata['length'] or 0)
+        except Exception as ex:
+            raise Exception('DDM Error: rucio_client.get_metadata failed ({0}) ({1})'.format(str(ex), dataset))
+
+    def get_number_events_from_metadata(self, dsn):
+        scope, dataset = self.extract_scope(dsn)
+        try:
+            metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
+            return int(metadata['events'] or 0)
         except Exception as ex:
             raise Exception('DDM Error: rucio_client.get_metadata failed ({0}) ({1})'.format(str(ex), dataset))
 
@@ -242,10 +286,12 @@ class DDMWrapper(object):
 
     @ddm_exception_free_wrapper
     def ddm_get_full_replicas(self, dsn):
+        if dsn.endswith('/'):
+            dsn = dsn[:-1]
         datasets = list()
         dataset_replicas = dict()
         if self.is_dsn_container(dsn):
-            datasets.extend(self.ddm_list_datasets_in_container(dsn))
+            datasets.extend(self._raise_ddm_exception_or_result(self.ddm_list_datasets_in_container(dsn)))
         else:
             datasets.append(dsn)
         for dataset in datasets:
@@ -275,10 +321,10 @@ class DDMWrapper(object):
             return False
 
     def get_nevents_per_file(self, dsn):
-        number_files = self.ddm_get_number_files(dsn)['result']
+        number_files = self._raise_ddm_exception_or_result(self.ddm_get_number_files(dsn))
         if not number_files:
             raise ValueError('Dataset {0} has no files'.format(dsn))
-        number_events = self.ddm_get_number_events(dsn)['result']
+        number_events = self._raise_ddm_exception_or_result(self.ddm_get_number_events(dsn))
         if not number_files:
             raise ValueError('Dataset {0} has no events or corresponding metadata (nEvents)'.format(dsn))
         return math.ceil(float(number_events) / float(number_files))
@@ -293,7 +339,7 @@ class DDMWrapper(object):
             input_container_name = '{0}/'.format(input_data_name)
 
         # searching containers first
-        for name in self.ddm_list_datasets(input_container_name):
+        for name in self._raise_ddm_exception_or_result(self.ddm_list_datasets(input_container_name)):
             if self.is_dsn_container(name):
                 if name[-1] == '/':
                     data_dict['containers'].append(name)
@@ -303,17 +349,17 @@ class DDMWrapper(object):
         # searching datasets
         if datasets_contained_only and len(data_dict['containers']):
             for container_name in data_dict['containers']:
-                dataset_names = self.ddm_list_datasets_in_container(container_name)
+                dataset_names = self._raise_ddm_exception_or_result(self.ddm_list_datasets_in_container(container_name))
                 data_dict['datasets'].extend(dataset_names)
         else:
             enable_pattern_search = True
-            names = self.ddm_list_datasets(input_data_name)
+            names = self._raise_ddm_exception_or_result(self.ddm_list_datasets(input_data_name))
             if len(names) > 0:
                 if names[0].split(':')[-1] == input_data_name.split(':')[-1] and self.is_dsn_dataset(names[0]):
                     data_dict['datasets'].append(names[0])
                     enable_pattern_search = False
             if enable_pattern_search:
-                for name in self.ddm_list_datasets("{0}*".format(input_data_name)):
+                for name in self._raise_ddm_exception_or_result(self.ddm_list_datasets("{0}*".format(input_data_name))):
                     # FIXME
                     is_sub_dataset = \
                         re.match(r"%s.*_(sub|dis)\d*" % input_data_name.split(':')[-1], name.split(':')[-1],
