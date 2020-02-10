@@ -197,6 +197,11 @@ class DDMWrapper(object):
         except Exception as ex:
             raise Exception('DDM Error: rucio_client.get_metadata failed ({0}) ({1})'.format(str(ex), dataset))
 
+    def _is_dsn_tb_deleted(self, dsn):
+        scope, dataset = self.extract_scope(dsn)
+        metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
+        return metadata['expired_at'] is not None
+
     @ddm_exception_free_wrapper
     def ddm_erase(self, dsn, undo=False, lifetime_desired=None):
         scope, name = self.extract_scope(dsn)
@@ -205,7 +210,9 @@ class DDMWrapper(object):
             lifetime = lifetime_desired
         if undo:
             lifetime = None
-        self.ddm_client.set_metadata(scope=scope, name=name, key='lifetime', value=lifetime)
+        if (lifetime is not None) and self._is_dsn_tb_deleted(dsn):
+            return True
+        return self.ddm_client.set_metadata(scope=scope, name=name, key='lifetime', value=lifetime)
 
     @ddm_exception_free_wrapper
     def ddm_erase_no_wait(self, dsn):
