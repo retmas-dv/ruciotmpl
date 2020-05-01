@@ -310,6 +310,15 @@ class DDMWrapper(object):
                     dataset_replicas[dataset].append(dataset_replica['rse'])
         return list(set.intersection(*[set(dataset_replicas[key]) for key in dataset_replicas]))
 
+    @ddm_exception_free_wrapper
+    def ddm_get_dsn(self, file_guid):
+        return self.ddm_client.get_dataset_by_guid(file_guid)
+
+    def get_dsn(self, file_guid):
+        for did in self._raise_ddm_exception_or_result(self.ddm_get_dsn(file_guid)):
+            dsn = did.get('name', None)
+            return dsn
+
     def is_dsn_container(self, dsn):
         scope, dataset = self.extract_scope(dsn)
         metadata = self.ddm_client.get_metadata(scope=scope, name=dataset)
