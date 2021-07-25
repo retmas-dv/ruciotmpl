@@ -158,6 +158,24 @@ class DDMWrapper(object):
         return filename_list
 
     @ddm_exception_free_wrapper
+    def ddm_list_rules_for_dataset(self, dsn):
+        scope, dataset = self.extract_scope(dsn)
+        dataset_meta = self.ddm_client.get_metadata(scope=scope, name=dataset)
+        rules = self.ddm_client.list_did_rules(scope=scope, name=dataset)
+        try:
+            next(rules)
+            rules = self.ddm_client.list_did_rules(scope=scope, name=dataset)
+        except StopIteration:
+            rules = []
+            if dataset_meta['did_type'] == u'CONTAINER':
+                for dsn in self.ddm_client.list_content(scope, dataset):
+                    rules.extend(self.ddm_client.list_did_rules(scope=dsn['scope'], name=dsn['name']))
+            if dataset_meta['did_type'] == u'DATASET':
+                for container in self.ddm_client.list_parent_dids(scope, dataset):
+                    rules.extend(self.ddm_client.list_did_rules(scope=container['scope'], name=container['name']))
+        return rules
+
+    @ddm_exception_free_wrapper
     def ddm_get_number_files(self, dsn):
         if dsn.endswith('/'):
             dsn = dsn[:-1]
@@ -335,6 +353,17 @@ class DDMWrapper(object):
             return bool(self.ddm_client.get_metadata(scope=scope, name=dataset))
         except DataIdentifierNotFound:
             return False
+
+    def has_dataset_rules(self, dsn, rse=None):
+        rules = list(self.ddm_list_rules_for_dataset(dsn)['result'])
+        if rules:
+            if rse is None:
+                return True
+            else:
+                for rule in rules:
+                    if str(rule['rse_expression']).lower() == str(rse).lower():
+                        return True
+        return False
 
     def get_nevents_per_file(self, dsn):
         number_files = self._raise_ddm_exception_or_result(self.ddm_get_number_files(dsn))
